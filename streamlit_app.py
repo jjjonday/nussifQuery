@@ -26,73 +26,110 @@ def fetch_polygon_data(ticker, multiplier, timespan, from_date, to_date, api_key
 
 
 # ---------------------------
-# Streamlit App UI
+# Streamlit App Layout
 # ---------------------------
 st.set_page_config(page_title="Polygon Data Downloader", layout="wide")
 st.title("📊 Polygon Data Downloader")
 
-st.markdown("""
-This tool fetches **historical aggregate data** from [Polygon.io](https://polygon.io) for multiple tickers and asset classes.  
-You can choose to combine all tickers into one CSV or download each separately.
-""")
+tabs = st.tabs(["📁 Ticker Library", "⬇️ Data Downloader"])
 
-# Sidebar inputs
-with st.sidebar:
-    st.header("Configuration")
+# ---------------------------
+# TAB 1: Ticker Library
+# ---------------------------
+with tabs[0]:
+    st.header("📁 Upload Your Ticker Library")
+
+    st.markdown("""
+    Upload a **CSV or Excel file** containing valid tickers to use in your data downloads.  
+    The file should have **one column** named `ticker`.
+    """)
+
+    uploaded_file = st.file_uploader("Upload Ticker Library", type=["csv", "xlsx"])
+
+    if uploaded_file:
+        if uploaded_file.name.endswith(".csv"):
+            ticker_library = pd.read_csv(uploaded_file)
+        else:
+            ticker_library = pd.read_excel(uploaded_file)
+
+        if "ticker" not in ticker_library.columns:
+            st.error("❌ The uploaded file must have a column named 'ticker'.")
+        else:
+            st.success(f"✅ Loaded {len(ticker_library)} tickers successfully!")
+            st.dataframe(ticker_library)
+
+            # Store ticker library in session
+            st.session_state["ticker_library"] = ticker_library["ticker"].dropna().tolist()
+    else:
+        st.info("Please upload a ticker library to begin.")
+
+# ---------------------------
+# TAB 2: Data Downloader
+# ---------------------------
+with tabs[1]:
+    st.header("⬇️ Polygon Data Downloader")
+
     api_key = st.text_input("🔑 Polygon API Key", type="password")
-    tickers_input = st.text_area("📈 Enter tickers (comma-separated)", "AAPL, C:EURUSD, X:BTCUSD, I:SPX")
+
+    # Use ticker library if available
+    if "ticker_library" in st.session_state:
+        st.success("Using tickers from uploaded library.")
+        tickers = st.session_state["ticker_library"]
+        st.text(f"Loaded {len(tickers)} tickers.")
+    else:
+        tickers_input = st.text_area("📈 Enter tickers (comma-separated)", "AAPL, C:EURUSD, X:BTCUSD, I:SPX")
+        tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
     multiplier = st.number_input("⏱️ Multiplier", min_value=1, max_value=60, value=1)
     timespan = st.selectbox("🕒 Timespan", ["minute", "hour", "day", "week", "month"])
     from_date = st.date_input("📅 From Date", value=datetime(2024, 1, 1))
     to_date = st.date_input("📅 To Date", value=datetime(2024, 12, 31))
     combine = st.checkbox("Combine all tickers into one CSV", value=True)
 
-# Run button
-if st.button("🚀 Fetch and Download Data"):
-    if not api_key or not tickers_input.strip():
-        st.error("Please provide your API key and at least one ticker.")
-    else:
-        tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-        all_data = []
+    if st.button("🚀 Fetch and Download Data"):
+        if not api_key:
+            st.error("Please enter your Polygon API key.")
+        elif not tickers:
+            st.error("No tickers found. Upload a library or enter manually.")
+        else:
+            all_data = []
+            st.info(f"Fetching data for {len(tickers)} tickers...")
 
-        st.info(f"Fetching data for {len(tickers)} tickers...")
+            for ticker in tickers:
+                with st.spinner(f"Fetching {ticker}..."):
+                    try:
+                        df = fetch_polygon_data(
+                            ticker=ticker,
+                            multiplier=multiplier,
+                            timespan=timespan,
+                            from_date=from_date,
+                            to_date=to_date,
+                            api_key=api_key
+                        )
+                        if df is not None:
+                            if combine:
+                                all_data.append(df)
+                            else:
+                                csv_buffer = io.StringIO()
+                                df.to_csv(csv_buffer, index=False)
+                                st.download_button(
+                                    label=f"⬇️ Download {ticker} CSV",
+                                    data=csv_buffer.getvalue(),
+                                    file_name=f"{ticker}_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv"
+                                )
+                    except Exception as e:
+                        st.error(f"❌ Failed to fetch {ticker}: {e}")
 
-        for ticker in tickers:
-            with st.spinner(f"Fetching {ticker}..."):
-                try:
-                    df = fetch_polygon_data(
-                        ticker=ticker,
-                        multiplier=multiplier,
-                        timespan=timespan,
-                        from_date=from_date,
-                        to_date=to_date,
-                        api_key=api_key
-                    )
-                    if df is not None:
-                        if combine:
-                            all_data.append(df)
-                        else:
-                            csv_buffer = io.StringIO()
-                            df.to_csv(csv_buffer, index=False)
-                            st.download_button(
-                                label=f"⬇️ Download {ticker} CSV",
-                                data=csv_buffer.getvalue(),
-                                file_name=f"{ticker}_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv"
-                            )
-                except Exception as e:
-                    st.error(f"❌ Failed to fetch {ticker}: {e}")
-
-        # Combine output
-        if combine and all_data:
-            combined_df = pd.concat(all_data, ignore_index=True)
-            csv_buffer = io.StringIO()
-            combined_df.to_csv(csv_buffer, index=False)
-            st.success("✅ Combined data ready!")
-            st.dataframe(combined_df.head(20))
-            st.download_button(
-                label="⬇️ Download Combined CSV",
-                data=csv_buffer.getvalue(),
-                file_name=f"combined_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+            if combine and all_data:
+                combined_df = pd.concat(all_data, ignore_index=True)
+                csv_buffer = io.StringIO()
+                combined_df.to_csv(csv_buffer, index=False)
+                st.success("✅ Combined data ready!")
+                st.dataframe(combined_df.head(20))
+                st.download_button(
+                    label="⬇️ Download Combined CSV",
+                    data=csv_buffer.getvalue(),
+                    file_name=f"combined_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
