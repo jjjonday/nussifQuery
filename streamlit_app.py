@@ -1,172 +1,98 @@
-import datetime
-import random
-
-import altair as alt
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import requests
+import io
+from datetime import datetime
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
-)
+# ---------------------------
+# Fetch Data Function
+# ---------------------------
+def fetch_polygon_data(ticker, multiplier, timespan, from_date, to_date, api_key):
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
+    params = {"apiKey": api_key}
+    response = requests.get(url, params=params)
+    response.raise_for_status()
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
+    data = response.json()
+    if "results" not in data or not data["results"]:
+        st.warning(f"No data found for {ticker}")
+        return None
 
-    # Set seed for reproducibility.
-    np.random.seed(42)
-
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
-    ]
-
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
-
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
+    df = pd.DataFrame(data["results"])
+    df["ticker"] = ticker
+    df.dropna(inplace=True)
+    df.fillna(method="ffill", inplace=True)
+    return df
 
 
-# Show a section to add a new ticket.
-st.header("Add a ticket")
+# ---------------------------
+# Streamlit App UI
+# ---------------------------
+st.set_page_config(page_title="Polygon Data Downloader", layout="wide")
+st.title("📊 Polygon Data Downloader")
 
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
+st.markdown("""
+This tool fetches **historical aggregate data** from [Polygon.io](https://polygon.io) for multiple tickers and asset classes.  
+You can choose to combine all tickers into one CSV or download each separately.
+""")
 
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
+# Sidebar inputs
+with st.sidebar:
+    st.header("Configuration")
+    api_key = st.text_input("🔑 Polygon API Key", type="password")
+    tickers_input = st.text_area("📈 Enter tickers (comma-separated)", "AAPL, C:EURUSD, X:BTCUSD, I:SPX")
+    multiplier = st.number_input("⏱️ Multiplier", min_value=1, max_value=60, value=1)
+    timespan = st.selectbox("🕒 Timespan", ["minute", "hour", "day", "week", "month"])
+    from_date = st.date_input("📅 From Date", value=datetime(2024, 1, 1))
+    to_date = st.date_input("📅 To Date", value=datetime(2024, 12, 31))
+    combine = st.checkbox("Combine all tickers into one CSV", value=True)
 
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
+# Run button
+if st.button("🚀 Fetch and Download Data"):
+    if not api_key or not tickers_input.strip():
+        st.error("Please provide your API key and at least one ticker.")
+    else:
+        tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+        all_data = []
 
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
+        st.info(f"Fetching data for {len(tickers)} tickers...")
 
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
-)
+        for ticker in tickers:
+            with st.spinner(f"Fetching {ticker}..."):
+                try:
+                    df = fetch_polygon_data(
+                        ticker=ticker,
+                        multiplier=multiplier,
+                        timespan=timespan,
+                        from_date=from_date,
+                        to_date=to_date,
+                        api_key=api_key
+                    )
+                    if df is not None:
+                        if combine:
+                            all_data.append(df)
+                        else:
+                            csv_buffer = io.StringIO()
+                            df.to_csv(csv_buffer, index=False)
+                            st.download_button(
+                                label=f"⬇️ Download {ticker} CSV",
+                                data=csv_buffer.getvalue(),
+                                file_name=f"{ticker}_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                mime="text/csv"
+                            )
+                except Exception as e:
+                    st.error(f"❌ Failed to fetch {ticker}: {e}")
 
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
-edited_df = st.data_editor(
-    st.session_state.df,
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
-)
-
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
-
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
-
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
-    )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
-
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+        # Combine output
+        if combine and all_data:
+            combined_df = pd.concat(all_data, ignore_index=True)
+            csv_buffer = io.StringIO()
+            combined_df.to_csv(csv_buffer, index=False)
+            st.success("✅ Combined data ready!")
+            st.dataframe(combined_df.head(20))
+            st.download_button(
+                label="⬇️ Download Combined CSV",
+                data=csv_buffer.getvalue(),
+                file_name=f"combined_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
